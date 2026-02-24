@@ -5,6 +5,7 @@ import email.policy
 import io
 import plistlib
 import re
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -13,6 +14,8 @@ from urllib.parse import parse_qs, urlparse
 import pandas as pd
 import streamlit as st
 from bs4 import BeautifulSoup
+from PIL import Image
+from streamlit_drawable_canvas import st_canvas
 
 
 OUTPUT_COLUMNS = [
@@ -639,31 +642,192 @@ def apply_visual_ranking_from_pdf(
     return ranked_items, len(matched_indexes), len(working_indices)
 
 
-def main() -> None:
-    st.set_page_config(page_title="SERP Parser", layout="wide")
-    st.title("SERP Parser (Streamlit)")
-    st.caption("Extract blocks and contents from saved Google SERP snapshots.")
+def contiguous_blocks_from_items(items: list[SerpItem]) -> list[dict[str, object]]:
+    if not items:
+        return []
+    blocks: list[dict[str, object]] = []
+    prev = ""
+    count = 0
+    for item in items:
+        if item.serp_block_type != prev:
+            if prev:
+                blocks.append({"serp_block_type": prev, "item_count": count})
+            prev = item.serp_block_type
+            count = 1
+        else:
+            count += 1
+    if prev:
+        blocks.append({"serp_block_type": prev, "item_count": count})
+    return blocks
 
-    st.subheader("Input files")
+
+def initial_canvas_objects(blocks: list[dict[str, object]], width: int, height: int) -> list[dict[str, object]]:
+    objects: list[dict[str, object]] = []
+    if not blocks:
+        return objects
+
+    margin_x = 24
+    top = 24
+    block_gap = 14
+    usable_w = max(120, width - margin_x * 2)
+    avg_h = max(80, int((height - 48 - block_gap * max(len(blocks) - 1, 0)) / max(len(blocks), 1)))
+
+    for block in blocks:
+        item_count = int(block.get("item_count", 1))
+        h = max(70, min(240, avg_h + (item_count - 1) * 10))
+        if top + h > height - 12:
+            h = max(50, height - top - 12)
+        objects.append(
+            {
+                "type": "rect",
+                "left": float(margin_x),
+                "top": float(top),
+                "width": float(usable_w),
+                "height": float(h),
+                "fill": "rgba(30, 136, 229, 0.15)",
+                "stroke": "#1e88e5",
+                "strokeWidth": 2,
+            }
+        )
+        top += h + block_gap
+    return objects
+
+
+def load_visual_image(upload: object) -> tuple[Image.Image, str]:
+    lower = upload.name.lower()
+    data = upload.getvalue()
+    if lower.endswith(".pdf"):
+        try:
+            import pypdfium2 as pdfium
+        except Exception as exc:
+            raise RuntimeError("Missing dependency: pypdfium2 (needed to render PDF for annotation)") from exc
+
+        pdf = pdfium.PdfDocument(io.BytesIO(data))
+        if len(pdf) == 0:
+            raise RuntimeError("PDF has no pages")
+        page = pdf[0]
+        pil_image = page.render(scale=2).to_pil()
+        return pil_image.convert("RGB"), "pdf"
+
+    pil_image = Image.open(io.BytesIO(data)).convert("RGB")
+    return pil_image, "image"
+
+
+def assign_block_ranks_from_geometry(blocks: list[dict[str, object]], image_height: int) -> list[dict[str, object]]:
+    if not blocks:
+        return blocks
+
+    blocks_sorted = sorted(blocks, key=lambda b: (float(b["top"]), float(b["left"])))
+    row_threshold = max(24.0, image_height * 0.03)
+    rows: list[dict[str, object]] = []
+
+    for block in blocks_sorted:
+        top = float(block["top"])
+        assigned_row = None
+        for row in rows:
+            if abs(top - float(row["top_ref"])) <= row_threshold:
+                assigned_row = row
+                break
+        if assigned_row is None:
+            assigned_row = {"top_ref": top, "blocks": []}
+            rows.append(assigned_row)
+        assigned_row["blocks"].append(block)
+
+    rows.sort(key=lambda r: float(r["top_ref"]))
+    for tb_rank, row in enumerate(rows, start=1):
+        row_blocks = sorted(row["blocks"], key=lambda b: float(b["left"]))
+        for lr_rank, block in enumerate(row_blocks, start=1):
+            block["serp_block_rank_tb"] = tb_rank
+            block["serp_block_rank_lr"] = lr_rank
+
+    return blocks_sorted
+
+
+def default_item_type(block_type: str) -> str:
+    if block_type == "people_also_ask":
+        return "question"
+    if block_type == "video_pack":
+        return "video"
+    if block_type == "image_pack":
+        return "image"
+    return "result"
+
+
+def build_items_from_annotated_blocks(
+    parsed_items: list[SerpItem], annotated_blocks: list[dict[str, object]], image_height: int
+) -> list[SerpItem]:
+    ranked_blocks = assign_block_ranks_from_geometry(annotated_blocks, image_height=image_height)
+    pools: dict[str, deque[SerpItem]] = defaultdict(deque)
+    for item in parsed_items:
+        pools[item.serp_block_type].append(item)
+
+    output: list[SerpItem] = []
+    for block in ranked_blocks:
+        block_type = str(block["serp_block_type"])
+        item_count = max(1, int(block["item_count"]))
+        tb_rank = int(block["serp_block_rank_tb"])
+        lr_rank = int(block["serp_block_rank_lr"])
+
+        for idx in range(1, item_count + 1):
+            if pools[block_type]:
+                base = pools[block_type].popleft()
+                row = SerpItem(
+                    serp_block_type=block_type,
+                    serp_block_rank_tb=tb_rank,
+                    serp_block_rank_lr=lr_rank,
+                    item_type=base.item_type,
+                    item_rank_tb=idx,
+                    item_rank_lr=idx if block_type == "image_pack" else 1,
+                    is_expandable=base.is_expandable,
+                    title=base.title,
+                    description=base.description,
+                    url=base.url,
+                    notes=clean_text(f"{base.notes}; visual_assisted"),
+                )
+            else:
+                row = SerpItem(
+                    serp_block_type=block_type,
+                    serp_block_rank_tb=tb_rank,
+                    serp_block_rank_lr=lr_rank,
+                    item_type=default_item_type(block_type),
+                    item_rank_tb=idx,
+                    item_rank_lr=idx if block_type == "image_pack" else 1,
+                    is_expandable="TRUE" if block_type == "people_also_ask" else "FALSE",
+                    title="",
+                    description="",
+                    url="",
+                    notes="visual_assisted; no_matching_html_item",
+                )
+            output.append(row)
+    return output
+
+
+def render_auto_mode() -> None:
+    st.subheader("Auto Mode")
+    st.caption("Automatic extraction from source files. Optional PDF-based re-ranking can be enabled.")
     html_uploads = st.file_uploader(
         "Upload SERP source files (required)",
         type=["html", "htm", "mht", "mhtml", "webarchive"],
         accept_multiple_files=True,
+        key="auto_html_uploads",
     )
     visual_uploads = st.file_uploader(
         "Upload visual files for better ranking (optional)",
         type=["pdf", "png", "jpg", "jpeg"],
         accept_multiple_files=True,
+        key="auto_visual_uploads",
     )
     use_visual_ranking = st.checkbox(
         "Use visual ranking when a matching PDF is available",
         value=True,
         help="Uses PDF text coordinates to improve top-bottom / left-right ordering.",
+        key="auto_use_visual_ranking",
     )
     visible_only_mode = st.checkbox(
         "Keep only items visible in PDF text layer",
         value=True,
         help="Removes rows found only in serialized HTML payload but not visible in the provided PDF snapshot.",
+        key="auto_visible_only_mode",
     )
 
     if not html_uploads:
@@ -683,7 +847,6 @@ def main() -> None:
             file_bytes = upload.getvalue()
             html = load_html_from_upload(upload.name, file_bytes)
             query, items = parse_serp(html)
-            visual_used = ""
             if use_visual_ranking:
                 matched_visual = find_visual_match(upload.name, visual_uploads or [])
                 if matched_visual and matched_visual.name.lower().endswith(".pdf"):
@@ -718,7 +881,6 @@ def main() -> None:
         return
 
     result = pd.concat(all_frames, ignore_index=True)
-
     st.subheader("Preview")
     st.dataframe(result, use_container_width=True, hide_index=True)
 
@@ -728,7 +890,133 @@ def main() -> None:
         data=csv_data,
         file_name="serp_output.csv",
         mime="text/csv",
+        key="auto_download_csv",
     )
+
+
+def render_visual_assisted_mode() -> None:
+    st.subheader("Visual Assisted Mode")
+    st.caption("Upload HTML + screenshot/PDF. The app proposes blocks and you can manually adjust them.")
+
+    html_upload = st.file_uploader(
+        "Upload one SERP source file (required)",
+        type=["html", "htm", "mht", "mhtml", "webarchive"],
+        accept_multiple_files=False,
+        key="va_html_upload",
+    )
+    visual_upload = st.file_uploader(
+        "Upload one screenshot/PDF (required)",
+        type=["pdf", "png", "jpg", "jpeg"],
+        accept_multiple_files=False,
+        key="va_visual_upload",
+    )
+
+    if not html_upload or not visual_upload:
+        st.info("Upload both one source file and one visual file to annotate blocks.")
+        return
+
+    try:
+        html = load_html_from_upload(html_upload.name, html_upload.getvalue())
+        query, parsed_items = parse_serp(html)
+        image, _kind = load_visual_image(visual_upload)
+    except Exception as exc:
+        st.error(f"Failed to prepare visual mode: {exc}")
+        return
+
+    image_w, image_h = image.size
+    base_blocks = contiguous_blocks_from_items(parsed_items)
+    if not base_blocks:
+        st.warning("No extracted items from HTML. You can still draw blocks manually and fill counts.")
+        base_blocks = [{"serp_block_type": "organic", "item_count": 1}]
+
+    default_objects = initial_canvas_objects(base_blocks, image_w, image_h)
+    initial_drawing = {"version": "4.4.0", "objects": default_objects}
+
+    st.write("1) Draw/edit rectangles on the screenshot. 2) Edit labels/counts in the table. 3) Generate CSV.")
+    canvas = st_canvas(
+        fill_color="rgba(30, 136, 229, 0.15)",
+        stroke_width=2,
+        stroke_color="#1e88e5",
+        background_image=image,
+        update_streamlit=True,
+        height=image_h,
+        width=image_w,
+        drawing_mode="rect",
+        initial_drawing=initial_drawing,
+        key="va_canvas",
+    )
+
+    objects = []
+    if canvas.json_data and canvas.json_data.get("objects"):
+        for obj in canvas.json_data["objects"]:
+            if obj.get("type") != "rect":
+                continue
+            objects.append(obj)
+
+    if not objects:
+        st.warning("Draw at least one rectangle block on the visual.")
+        return
+
+    block_rows = []
+    for idx, obj in enumerate(objects, start=1):
+        fallback_type = base_blocks[idx - 1]["serp_block_type"] if idx - 1 < len(base_blocks) else "organic"
+        fallback_count = int(base_blocks[idx - 1]["item_count"]) if idx - 1 < len(base_blocks) else 1
+        block_rows.append(
+            {
+                "block_id": idx,
+                "serp_block_type": fallback_type,
+                "item_count": fallback_count,
+                "left": round(float(obj.get("left", 0.0)), 1),
+                "top": round(float(obj.get("top", 0.0)), 1),
+                "width": round(float(obj.get("width", 0.0) * float(obj.get("scaleX", 1.0))), 1),
+                "height": round(float(obj.get("height", 0.0) * float(obj.get("scaleY", 1.0))), 1),
+            }
+        )
+
+    block_df = pd.DataFrame(block_rows)
+    edited_df = st.data_editor(
+        block_df,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        column_config={
+            "serp_block_type": st.column_config.SelectboxColumn(
+                "serp_block_type",
+                options=["organic", "people_also_ask", "video_pack", "image_pack", "other"],
+            ),
+            "item_count": st.column_config.NumberColumn("item_count", min_value=1, step=1),
+        },
+        key="va_blocks_editor",
+    )
+
+    if st.button("Generate CSV from annotations", key="va_generate_csv"):
+        try:
+            annotated_blocks = edited_df.to_dict(orient="records")
+            items = build_items_from_annotated_blocks(parsed_items, annotated_blocks, image_height=image_h)
+            browser = guess_browser(html_upload.name)
+            result = rows_to_dataframe(query=query, browser=browser, source_file=html_upload.name, items=items)
+            st.subheader("Annotated Output Preview")
+            st.dataframe(result, use_container_width=True, hide_index=True)
+            csv_data = result.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="Download Annotated CSV",
+                data=csv_data,
+                file_name="serp_output_annotated.csv",
+                mime="text/csv",
+                key="va_download_csv",
+            )
+        except Exception as exc:
+            st.error(f"Failed to generate annotated output: {exc}")
+
+
+def main() -> None:
+    st.set_page_config(page_title="SERP Parser", layout="wide")
+    st.title("SERP Parser (Streamlit)")
+    tab_auto, tab_visual = st.tabs(["Auto", "Visual Assisted"])
+    with tab_auto:
+        render_auto_mode()
+    with tab_visual:
+        render_visual_assisted_mode()
 
 
 if __name__ == "__main__":

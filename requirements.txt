@@ -2,3 +2,5 @@ streamlit>=1.42.0
 pandas>=2.2.0
 beautifulsoup4>=4.12.0
 pdfplumber>=0.11.0
+pypdfium2>=4.30.0
+streamlit-drawable-canvas>=0.9.3

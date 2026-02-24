@@ -13,32 +13,23 @@ You can publish this app from GitHub to Streamlit Community Cloud (free):
 
 Once deployed, end users only need the app URL. They do not need Python or local dependencies.
 
-## Inputs
-- SERP source files (required): `.html`, `.htm`, `.mht`, `.mhtml`, `.webarchive`
-- Visual files (optional): `.pdf`, `.png`, `.jpg`, `.jpeg`
+## App Modes
 
-## Current Visual Ranking Support
-- `PDF`: supported (extracts approximate text coordinates from page 1 and reorders SERP rows by visual position)
-- `PNG/JPG`: accepted as upload, but not parsed yet for automatic ranking
+### 1) Auto Mode
+Automatic extraction from source files:
+- Input source files (required): `.html`, `.htm`, `.mht`, `.mhtml`, `.webarchive`
+- Optional visual files: `.pdf`, `.png`, `.jpg`, `.jpeg`
+- Optional PDF-based ranking refinement and visible-only filtering
 
-Recommended mode for better `top-bottom` / `left-right` ordering: upload both HTML and the matching PDF snapshot.
+### 2) Visual Assisted Mode
+Human-in-the-loop annotation workflow:
+- Upload one source file (`html/mht/webarchive`) and one screenshot (`pdf/png/jpg`)
+- The app proposes block rectangles
+- You can manually adjust rectangles and edit `serp_block_type` + `item_count`
+- The app computes `serp_block_rank_tb` / `serp_block_rank_lr` from geometry
+- Items are enriched from HTML and exported to CSV
 
-## Features
-- Content extraction from SERP source files:
-  - `serp_block_type`
-  - `title`, `description`, `url`, `domain`
-  - `is_expandable` (`TRUE` / `FALSE`)
-- Rank assignment:
-  - `serp_block_rank_tb` and `item_rank_tb`
-  - `serp_block_rank_lr` and `item_rank_lr`
-- Optional visual refinement from PDF for more reliable ordering
-- Table preview and CSV export
-
-## Local Run (Optional)
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
+This mode is recommended when automatic structure is not satisfactory.
 
 ## CSV Data Dictionary
 
@@ -48,8 +39,8 @@ streamlit run app.py
 | `browser` | string | Browser inferred from file name when possible. | `chrome` |
 | `source_file` | string | Uploaded source file used for extraction. | `chrome html.html` |
 | `serp_block_type` | string | SERP block family. Current values: `organic`, `people_also_ask`, `video_pack`, `image_pack`, `other`. | `organic` |
-| `serp_block_rank_tb` | integer | Block order from top to bottom in the final scan sequence. | `1` |
-| `serp_block_rank_lr` | integer | Block order from left to right in the same vertical band. | `1` |
+| `serp_block_rank_tb` | integer | Block order from top to bottom; in visual mode based on block Y coordinates. | `1` |
+| `serp_block_rank_lr` | integer | Block order from left to right within the same vertical row. | `1` |
 | `item_type` | string | Item category inside a block. Current values: `result`, `question`, `video`, `image`. | `result` |
 | `item_rank_tb` | integer | Item order from top to bottom inside the block. | `2` |
 | `item_rank_lr` | integer | Item order from left to right inside the block (notably used in image rows). | `1` |
@@ -58,8 +49,14 @@ streamlit run app.py
 | `description` | string | Item snippet/description text, when available. | `...` |
 | `url` | string | Destination URL extracted from the item, when available. | `https://openai.com/it-IT/` |
 | `domain` | string | Host/domain parsed from `url`. | `openai.com` |
-| `notes` | string | Additional extraction notes (fallback path, visual ranking metadata, etc.). | `visual ranking from ...` |
+| `notes` | string | Additional extraction notes (fallback path, visual metadata, manual-assisted output notes). | `visual_assisted` |
+
+## Local Run (Optional)
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
 
 ## Notes
 - Expanded content is not reconstructed from non-expanded snapshots.
-- Visual ranking from PDF is heuristic and depends on title matching quality.
+- PDF visual ranking and visual-assisted annotation are heuristic but significantly improve block structure control.
