@@ -933,29 +933,40 @@ def render_visual_assisted_mode() -> None:
     initial_drawing = {"version": "4.4.0", "objects": default_objects}
 
     st.write("1) Draw/edit rectangles on the screenshot. 2) Edit labels/counts in the table. 3) Generate CSV.")
-    canvas = st_canvas(
-        fill_color="rgba(30, 136, 229, 0.15)",
-        stroke_width=2,
-        stroke_color="#1e88e5",
-        background_image=image,
-        update_streamlit=True,
-        height=image_h,
-        width=image_w,
-        drawing_mode="rect",
-        initial_drawing=initial_drawing,
-        key="va_canvas",
-    )
-
     objects = []
-    if canvas.json_data and canvas.json_data.get("objects"):
-        for obj in canvas.json_data["objects"]:
-            if obj.get("type") != "rect":
-                continue
-            objects.append(obj)
+    canvas_ok = True
+    try:
+        canvas = st_canvas(
+            fill_color="rgba(30, 136, 229, 0.15)",
+            stroke_width=2,
+            stroke_color="#1e88e5",
+            background_image=image,
+            update_streamlit=True,
+            height=image_h,
+            width=image_w,
+            drawing_mode="rect",
+            initial_drawing=initial_drawing,
+            key="va_canvas",
+        )
+        if canvas.json_data and canvas.json_data.get("objects"):
+            for obj in canvas.json_data["objects"]:
+                if obj.get("type") != "rect":
+                    continue
+                objects.append(obj)
+    except Exception as exc:
+        canvas_ok = False
+        st.warning(
+            "Interactive canvas is unavailable in this deployment. "
+            "Using table-based annotation fallback."
+        )
+        st.caption(f"Canvas error: {exc}")
+        st.image(image, caption="Reference screenshot", use_container_width=True)
 
     if not objects:
-        st.warning("Draw at least one rectangle block on the visual.")
-        return
+        if canvas_ok:
+            st.warning("Draw at least one rectangle block on the visual.")
+            return
+        objects = default_objects
 
     block_rows = []
     for idx, obj in enumerate(objects, start=1):
