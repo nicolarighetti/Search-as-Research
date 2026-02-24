@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import email
 import email.policy
+import io
 import plistlib
 import re
 from dataclasses import dataclass
@@ -521,29 +522,159 @@ def rows_to_dataframe(query: str, browser: str, source_file: str, items: Iterabl
     return df[OUTPUT_COLUMNS]
 
 
+def normalize_match_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def extract_pdf_lines(pdf_data: bytes) -> list[tuple[str, float, float]]:
+    """
+    Extract rough visual lines as (text, y, x) from first PDF page.
+    """
+    try:
+        import pdfplumber
+    except Exception as exc:
+        raise RuntimeError("Missing dependency: pdfplumber") from exc
+
+    lines: list[tuple[str, float, float]] = []
+    with pdfplumber.open(io.BytesIO(pdf_data)) as pdf:
+        if not pdf.pages:
+            return lines
+        page = pdf.pages[0]
+        words = page.extract_words(use_text_flow=True, keep_blank_chars=False) or []
+        if not words:
+            return lines
+
+        buckets: dict[int, list[dict]] = {}
+        for word in words:
+            top = float(word.get("top", 0.0))
+            key = int(top // 6)
+            buckets.setdefault(key, []).append(word)
+
+        for key in sorted(buckets):
+            row_words = sorted(buckets[key], key=lambda w: float(w.get("x0", 0.0)))
+            text = clean_text(" ".join(str(w.get("text", "")) for w in row_words))
+            if not text:
+                continue
+            y = float(sum(float(w.get("top", 0.0)) for w in row_words)) / max(len(row_words), 1)
+            x = float(min(float(w.get("x0", 0.0)) for w in row_words))
+            lines.append((text, y, x))
+    return lines
+
+
+def find_visual_match(html_name: str, visual_uploads: list[object]) -> object | None:
+    if not visual_uploads:
+        return None
+    if len(visual_uploads) == 1:
+        return visual_uploads[0]
+
+    html_lower = html_name.lower()
+    html_browser = guess_browser(html_name)
+
+    for visual in visual_uploads:
+        visual_lower = visual.name.lower()
+        if html_browser != "unknown" and html_browser in visual_lower:
+            return visual
+        if visual_lower.split(".")[0] in html_lower:
+            return visual
+    return None
+
+
+def apply_visual_ranking_from_pdf(items: list[SerpItem], pdf_data: bytes) -> tuple[list[SerpItem], int]:
+    """
+    Reorder extracted items using approximate positions recovered from a PDF snapshot.
+    """
+    if not items:
+        return items, 0
+
+    pdf_lines = extract_pdf_lines(pdf_data)
+    norm_lines = [(normalize_match_text(text), y, x) for text, y, x in pdf_lines]
+    positions: dict[int, tuple[float, float]] = {}
+
+    for idx, item in enumerate(items):
+        ntitle = normalize_match_text(item.title)
+        if len(ntitle) < 6:
+            continue
+
+        best: tuple[int, float, float] | None = None
+        for nline, y, x in norm_lines:
+            if not nline:
+                continue
+            if ntitle in nline:
+                score = len(ntitle)
+            elif len(nline) >= 8 and nline in ntitle:
+                score = len(nline)
+            else:
+                continue
+            if best is None or score > best[0]:
+                best = (score, y, x)
+        if best:
+            positions[idx] = (best[1], best[2])
+
+    decorated = []
+    for idx, item in enumerate(items):
+        if idx in positions:
+            y, x = positions[idx]
+            decorated.append((0, y, x, idx, item))
+        else:
+            decorated.append((1, float(idx), 0.0, idx, item))
+    decorated.sort(key=lambda row: (row[0], row[1], row[2], row[3]))
+    ranked_items = [row[4] for row in decorated]
+    ranked_items = normalize_section_ranks(ranked_items)
+    return ranked_items, len(positions)
+
+
 def main() -> None:
     st.set_page_config(page_title="SERP Parser", layout="wide")
     st.title("SERP Parser (Streamlit)")
-    st.caption("Estrae blocchi e contenuti da snapshot Google SERP (HTML, MHT/MHTML, WebArchive).")
+    st.caption("Extract blocks and contents from saved Google SERP snapshots.")
 
-    uploads = st.file_uploader(
-        "Carica uno o più file",
+    st.subheader("Input files")
+    html_uploads = st.file_uploader(
+        "Upload SERP source files (required)",
         type=["html", "htm", "mht", "mhtml", "webarchive"],
         accept_multiple_files=True,
     )
+    visual_uploads = st.file_uploader(
+        "Upload visual files for better ranking (optional)",
+        type=["pdf", "png", "jpg", "jpeg"],
+        accept_multiple_files=True,
+    )
+    use_visual_ranking = st.checkbox(
+        "Use visual ranking when a matching PDF is available",
+        value=True,
+        help="Uses PDF text coordinates to improve top-bottom / left-right ordering.",
+    )
 
-    if not uploads:
-        st.info("Carica almeno un file per iniziare.")
+    if not html_uploads:
+        st.info("Upload at least one SERP source file to start.")
         return
 
     all_frames: list[pd.DataFrame] = []
     problems: list[str] = []
 
-    for upload in uploads:
+    if use_visual_ranking and visual_uploads:
+        has_pdf = any(v.name.lower().endswith(".pdf") for v in visual_uploads)
+        if not has_pdf:
+            st.warning("Visual ranking currently supports PDF only. Images are uploaded but not parsed yet.")
+
+    for upload in html_uploads:
         try:
             file_bytes = upload.getvalue()
             html = load_html_from_upload(upload.name, file_bytes)
             query, items = parse_serp(html)
+            visual_used = ""
+            if use_visual_ranking:
+                matched_visual = find_visual_match(upload.name, visual_uploads or [])
+                if matched_visual and matched_visual.name.lower().endswith(".pdf"):
+                    items, matched_count = apply_visual_ranking_from_pdf(items, matched_visual.getvalue())
+                    visual_used = matched_visual.name
+                    if matched_count == 0:
+                        for item in items:
+                            item.notes = clean_text(f"{item.notes}; visual pdf matched but no title positions found")
+                    else:
+                        for item in items:
+                            item.notes = clean_text(f"{item.notes}; visual ranking from {visual_used}; matched_titles={matched_count}")
+
             browser = guess_browser(upload.name)
             frame = rows_to_dataframe(query=query, browser=browser, source_file=upload.name, items=items)
             all_frames.append(frame)
@@ -551,22 +682,22 @@ def main() -> None:
             problems.append(f"{upload.name}: {exc}")
 
     if problems:
-        st.warning("Alcuni file non sono stati processati correttamente:")
+        st.warning("Some files were not processed correctly:")
         for problem in problems:
             st.write(f"- {problem}")
 
     if not all_frames:
-        st.error("Nessun dato estratto dai file caricati.")
+        st.error("No data extracted from uploaded files.")
         return
 
     result = pd.concat(all_frames, ignore_index=True)
 
-    st.subheader("Anteprima")
+    st.subheader("Preview")
     st.dataframe(result, use_container_width=True, hide_index=True)
 
     csv_data = result.to_csv(index=False).encode("utf-8")
     st.download_button(
-        label="Scarica CSV",
+        label="Download CSV",
         data=csv_data,
         file_name="serp_output.csv",
         mime="text/csv",
