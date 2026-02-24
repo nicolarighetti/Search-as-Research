@@ -321,16 +321,30 @@ def parse_serp(html: str) -> tuple[str, list[SerpItem]]:
         blocks = soup.select("div.MjjYud")
 
     items: list[SerpItem] = []
+    seen_rows: set[tuple[str, str, str, int]] = set()
     for block_rank, block in enumerate(blocks, start=1):
-        block_type = detect_block_type(block)
-        if block_type == "organic":
-            items.extend(extract_organic_items(block, block_rank))
-        elif block_type == "people_also_ask":
-            items.extend(extract_paa_items(block, block_rank))
-        elif block_type == "video_pack":
-            items.extend(extract_video_items(block, block_rank))
-        elif block_type == "image_pack":
-            items.extend(extract_image_items(block, block_rank))
+        # Do not classify blocks exclusively: Google often mixes multiple
+        # result families inside the same top-level DOM container.
+        for row in extract_organic_items(block, block_rank):
+            key = (row.serp_block_type, row.title, row.url, row.serp_block_rank_tb)
+            if key not in seen_rows:
+                seen_rows.add(key)
+                items.append(row)
+        for row in extract_paa_items(block, block_rank):
+            key = (row.serp_block_type, row.title, row.url, row.serp_block_rank_tb)
+            if key not in seen_rows:
+                seen_rows.add(key)
+                items.append(row)
+        for row in extract_video_items(block, block_rank):
+            key = (row.serp_block_type, row.title, row.url, row.serp_block_rank_tb)
+            if key not in seen_rows:
+                seen_rows.add(key)
+                items.append(row)
+        for row in extract_image_items(block, block_rank):
+            key = (row.serp_block_type, row.title, row.url, row.serp_block_rank_tb)
+            if key not in seen_rows:
+                seen_rows.add(key)
+                items.append(row)
 
     return query, items
 
