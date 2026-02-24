@@ -179,7 +179,8 @@ def extract_organic_items(block: BeautifulSoup, block_rank: int) -> list[SerpIte
     items: list[SerpItem] = []
     seen: set[tuple[str, str]] = set()
     for idx, anchor in enumerate(block.select("a.zReHs"), start=1):
-        title = clean_text(anchor.get_text(" "))
+        h3 = anchor.select_one("h3")
+        title = clean_text(h3.get_text(" ")) if h3 else clean_text(anchor.get_text(" "))
         url = clean_text(anchor.get("href"))
         key = (title, url)
         if not title and not url:
@@ -351,7 +352,7 @@ def extract_wjd_items(html: str, start_block_rank: int) -> list[SerpItem]:
                 serp_block_rank_tb=rank,
                 serp_block_rank_lr=1,
                 item_type=item_type,
-                item_rank_tb=1,
+                item_rank_tb=0,
                 item_rank_lr=1,
                 is_expandable="FALSE",
                 title=title,
@@ -360,7 +361,6 @@ def extract_wjd_items(html: str, start_block_rank: int) -> list[SerpItem]:
                 notes="parsed from serialized payload",
             )
         )
-        rank += 1
 
     for match in simple_pattern.finditer(html):
         url = clean_text(match.group("url"))
@@ -380,7 +380,7 @@ def extract_wjd_items(html: str, start_block_rank: int) -> list[SerpItem]:
                 serp_block_rank_tb=rank,
                 serp_block_rank_lr=1,
                 item_type=item_type,
-                item_rank_tb=1,
+                item_rank_tb=0,
                 item_rank_lr=1,
                 is_expandable="FALSE",
                 title=title,
@@ -389,7 +389,6 @@ def extract_wjd_items(html: str, start_block_rank: int) -> list[SerpItem]:
                 notes="parsed from serialized payload",
             )
         )
-        rank += 1
 
     return rows
 
@@ -404,40 +403,92 @@ def parse_serp(html: str) -> tuple[str, list[SerpItem]]:
         blocks = soup.select("div.MjjYud")
 
     items: list[SerpItem] = []
-    seen_rows: set[tuple[str, str, str, int]] = set()
+    seen_rows: set[tuple[str, str, str]] = set()
     for block_rank, block in enumerate(blocks, start=1):
         # Do not classify blocks exclusively: Google often mixes multiple
         # result families inside the same top-level DOM container.
         for row in extract_organic_items(block, block_rank):
-            key = (row.serp_block_type, row.title, row.url, row.serp_block_rank_tb)
+            key = (row.serp_block_type, row.title, row.url)
             if key not in seen_rows:
                 seen_rows.add(key)
                 items.append(row)
         for row in extract_paa_items(block, block_rank):
-            key = (row.serp_block_type, row.title, row.url, row.serp_block_rank_tb)
+            key = (row.serp_block_type, row.title, row.url)
             if key not in seen_rows:
                 seen_rows.add(key)
                 items.append(row)
         for row in extract_video_items(block, block_rank):
-            key = (row.serp_block_type, row.title, row.url, row.serp_block_rank_tb)
+            key = (row.serp_block_type, row.title, row.url)
             if key not in seen_rows:
                 seen_rows.add(key)
                 items.append(row)
         for row in extract_image_items(block, block_rank):
-            key = (row.serp_block_type, row.title, row.url, row.serp_block_rank_tb)
+            key = (row.serp_block_type, row.title, row.url)
             if key not in seen_rows:
                 seen_rows.add(key)
                 items.append(row)
 
     # Fallback for saved SERPs where results are present only in serialized JS payloads.
     max_rank = max((x.serp_block_rank_tb for x in items), default=0)
+    first_organic_block_rank = min(
+        (x.serp_block_rank_tb for x in items if x.serp_block_type == "organic"),
+        default=max_rank + 1,
+    )
+    first_video_block_rank = min(
+        (x.serp_block_rank_tb for x in items if x.serp_block_type == "video_pack"),
+        default=max_rank + 1,
+    )
+    next_item_rank: dict[tuple[str, int], int] = {}
+    for x in items:
+        key = (x.serp_block_type, x.serp_block_rank_tb)
+        next_item_rank[key] = max(next_item_rank.get(key, 0), x.item_rank_tb)
+
     for row in extract_wjd_items(html, start_block_rank=max_rank + 1):
-        key = (row.serp_block_type, row.title, row.url, row.serp_block_rank_tb)
+        # Keep fallback organic/video rows in their existing first blocks, then append.
+        if row.serp_block_type == "organic":
+            row.serp_block_rank_tb = first_organic_block_rank
+        elif row.serp_block_type == "video_pack":
+            row.serp_block_rank_tb = first_video_block_rank
+
+        rank_key = (row.serp_block_type, row.serp_block_rank_tb)
+        row.item_rank_tb = next_item_rank.get(rank_key, 0) + 1
+        row.item_rank_lr = 1 if row.serp_block_type != "image_pack" else row.item_rank_tb
+        next_item_rank[rank_key] = row.item_rank_tb
+
+        key = (row.serp_block_type, row.title, row.url)
         if key not in seen_rows:
             seen_rows.add(key)
             items.append(row)
 
-    return query, items
+    return query, normalize_section_ranks(items)
+
+
+def normalize_section_ranks(items: list[SerpItem]) -> list[SerpItem]:
+    """
+    Recompute section ranks from the actual extraction order:
+    contiguous items of the same type belong to the same block.
+    """
+    if not items:
+        return items
+
+    current_block_rank = 0
+    previous_type = ""
+    item_counter: dict[tuple[str, int], int] = {}
+
+    for item in items:
+        if item.serp_block_type != previous_type:
+            current_block_rank += 1
+            previous_type = item.serp_block_type
+
+        item.serp_block_rank_tb = current_block_rank
+        item.serp_block_rank_lr = 1
+
+        key = (item.serp_block_type, current_block_rank)
+        item_counter[key] = item_counter.get(key, 0) + 1
+        item.item_rank_tb = item_counter[key]
+        item.item_rank_lr = item.item_rank_tb if item.serp_block_type == "image_pack" else 1
+
+    return items
 
 
 def rows_to_dataframe(query: str, browser: str, source_file: str, items: Iterable[SerpItem]) -> pd.DataFrame:
