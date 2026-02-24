@@ -311,6 +311,89 @@ def extract_image_items(block: BeautifulSoup, block_rank: int) -> list[SerpItem]
     return rows
 
 
+def extract_wjd_items(html: str, start_block_rank: int) -> list[SerpItem]:
+    """
+    Fallback extraction from serialized Google payloads (W_jd/js snippets).
+    Some saved SERP files include many results only inside script data.
+    """
+    rows: list[SerpItem] = []
+    rank = start_block_rank
+
+    # Rich pattern: [title, description, source, data:image...], [null,1,[..., title, ..., url], ...]
+    rich_pattern = re.compile(
+        r'\["(?P<t1>[^"]+)","(?P<desc>[^"]*)","(?P<src>[^"]*)","data:image[^"]*"\],\s*'
+        r'\[null,1,\[null,null,5,null,"(?P<t2>[^"]+)",null,"(?P<url>https://[^"]+)"\]',
+        flags=re.DOTALL,
+    )
+    simple_pattern = re.compile(
+        r'\[null,1,\[null,null,5,null,"(?P<title>[^"]+)",null,"(?P<url>https://[^"]+)"\]',
+        flags=re.DOTALL,
+    )
+
+    seen_urls: set[str] = set()
+
+    for match in rich_pattern.finditer(html):
+        url = clean_text(match.group("url"))
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        title = clean_text(match.group("t2") or match.group("t1"))
+        desc = clean_text(match.group("desc"))
+        if "youtube.com/shorts" in url or "youtube.com/watch" in url:
+            block_type = "video_pack"
+            item_type = "video"
+        else:
+            block_type = "organic"
+            item_type = "result"
+        rows.append(
+            SerpItem(
+                serp_block_type=block_type,
+                serp_block_rank_tb=rank,
+                serp_block_rank_lr=1,
+                item_type=item_type,
+                item_rank_tb=1,
+                item_rank_lr=1,
+                is_expandable="FALSE",
+                title=title,
+                description=desc,
+                url=url,
+                notes="parsed from serialized payload",
+            )
+        )
+        rank += 1
+
+    for match in simple_pattern.finditer(html):
+        url = clean_text(match.group("url"))
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        title = clean_text(match.group("title"))
+        if "youtube.com/shorts" in url or "youtube.com/watch" in url:
+            block_type = "video_pack"
+            item_type = "video"
+        else:
+            block_type = "organic"
+            item_type = "result"
+        rows.append(
+            SerpItem(
+                serp_block_type=block_type,
+                serp_block_rank_tb=rank,
+                serp_block_rank_lr=1,
+                item_type=item_type,
+                item_rank_tb=1,
+                item_rank_lr=1,
+                is_expandable="FALSE",
+                title=title,
+                description="",
+                url=url,
+                notes="parsed from serialized payload",
+            )
+        )
+        rank += 1
+
+    return rows
+
+
 def parse_serp(html: str) -> tuple[str, list[SerpItem]]:
     soup = BeautifulSoup(html, "html.parser")
     query = guess_query(soup)
@@ -345,6 +428,14 @@ def parse_serp(html: str) -> tuple[str, list[SerpItem]]:
             if key not in seen_rows:
                 seen_rows.add(key)
                 items.append(row)
+
+    # Fallback for saved SERPs where results are present only in serialized JS payloads.
+    max_rank = max((x.serp_block_rank_tb for x in items), default=0)
+    for row in extract_wjd_items(html, start_block_rank=max_rank + 1):
+        key = (row.serp_block_type, row.title, row.url, row.serp_block_rank_tb)
+        if key not in seen_rows:
+            seen_rows.add(key)
+            items.append(row)
 
     return query, items
 
