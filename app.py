@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 import pandas as pd
 import streamlit as st
 from bs4 import BeautifulSoup
-from PIL import Image
+from PIL import Image, ImageDraw
 from streamlit_drawable_canvas import st_canvas
 
 
@@ -775,6 +775,75 @@ def show_image_compat(image: Image.Image, caption: str) -> None:
             st.image(image, caption=caption)
 
 
+def normalize_block_records(records: list[dict[str, object]], image_w: int, image_h: int) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    for record in records:
+        block_type = clean_text(str(record.get("serp_block_type", "organic"))).lower() or "organic"
+        try:
+            item_count = int(float(record.get("item_count", 1)))
+            left = float(record.get("left", 0.0))
+            top = float(record.get("top", 0.0))
+            width = float(record.get("width", 0.0))
+            height = float(record.get("height", 0.0))
+        except Exception:
+            continue
+
+        if width <= 1 or height <= 1:
+            continue
+        if item_count < 1:
+            item_count = 1
+
+        left = max(0.0, min(left, float(image_w - 2)))
+        top = max(0.0, min(top, float(image_h - 2)))
+        width = max(2.0, min(width, float(image_w) - left))
+        height = max(2.0, min(height, float(image_h) - top))
+
+        normalized.append(
+            {
+                "serp_block_type": block_type,
+                "item_count": item_count,
+                "left": round(left, 1),
+                "top": round(top, 1),
+                "width": round(width, 1),
+                "height": round(height, 1),
+            }
+        )
+    return normalized
+
+
+def draw_blocks_overlay(base_image: Image.Image, blocks: list[dict[str, object]]) -> Image.Image:
+    preview = base_image.copy().convert("RGBA")
+    draw = ImageDraw.Draw(preview, "RGBA")
+
+    for idx, block in enumerate(blocks, start=1):
+        left = float(block["left"])
+        top = float(block["top"])
+        width = float(block["width"])
+        height = float(block["height"])
+        right = left + width
+        bottom = top + height
+
+        fill = (30, 136, 229, 28)
+        stroke = (30, 136, 229, 220)
+        draw.rectangle([(left, top), (right, bottom)], fill=fill, outline=stroke, width=3)
+
+        label = f"{idx}. {block['serp_block_type']} ({block['item_count']})"
+        label_pad_x = 6
+        label_pad_y = 2
+        label_h = 18
+        label_w = min(max(80, 7 * len(label)), int(width))
+        label_top = max(0, top - label_h)
+        draw.rectangle(
+            [(left, label_top), (left + label_w, label_top + label_h)],
+            fill=(30, 136, 229, 220),
+            outline=(30, 136, 229, 255),
+            width=1,
+        )
+        draw.text((left + label_pad_x, label_top + label_pad_y), label, fill=(255, 255, 255, 255))
+
+    return preview.convert("RGB")
+
+
 def assign_block_ranks_from_geometry(blocks: list[dict[str, object]], image_height: int) -> list[dict[str, object]]:
     if not blocks:
         return blocks
@@ -1166,20 +1235,31 @@ def render_visual_assisted_mode() -> None:
         block_df,
         use_container_width=True,
         hide_index=True,
-        num_rows="fixed",
+        num_rows="dynamic",
         column_config={
             "serp_block_type": st.column_config.SelectboxColumn(
                 "serp_block_type",
                 options=["organic", "people_also_ask", "video_pack", "image_pack", "other"],
             ),
             "item_count": st.column_config.NumberColumn("item_count", min_value=1, step=1),
+            "left": st.column_config.NumberColumn("left", min_value=0.0, step=1.0),
+            "top": st.column_config.NumberColumn("top", min_value=0.0, step=1.0),
+            "width": st.column_config.NumberColumn("width", min_value=2.0, step=1.0),
+            "height": st.column_config.NumberColumn("height", min_value=2.0, step=1.0),
         },
         key="va_blocks_editor",
     )
 
+    annotated_blocks = normalize_block_records(edited_df.to_dict(orient="records"), image_w=image_w, image_h=image_h)
+    if not annotated_blocks:
+        st.warning("Add at least one valid block (left/top/width/height).")
+        return
+
+    overlay = draw_blocks_overlay(image, annotated_blocks)
+    show_image_compat(overlay, caption="Overlay preview (rectangles are drawn over the screenshot)")
+
     if st.button("Generate CSV from annotations", key="va_generate_csv"):
         try:
-            annotated_blocks = edited_df.to_dict(orient="records")
             items = build_items_from_annotated_blocks(parsed_items, annotated_blocks, image_height=image_h)
             browser = guess_browser(html_upload.name)
             result = rows_to_dataframe(query=query, browser=browser, source_file=html_upload.name, items=items)

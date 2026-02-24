@@ -24,8 +24,9 @@ Automatic extraction from source files:
 ### 2) Visual Assisted Mode
 Human-in-the-loop annotation workflow:
 - Upload one source file (`html/mht/webarchive`) and one screenshot (`pdf/png/jpg`)
-- The app proposes block rectangles
-- You can manually adjust rectangles and edit `serp_block_type` + `item_count`
+- The app proposes block rectangles (coordinates)
+- You can manually edit coordinates and labels in a table (`left`, `top`, `width`, `height`, `serp_block_type`, `item_count`)
+- The app renders an overlay preview with rectangles drawn over the screenshot
 - The app computes `serp_block_rank_tb` / `serp_block_rank_lr` from geometry
 - Items are enriched from HTML and exported to CSV
 
