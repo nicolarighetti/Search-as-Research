@@ -853,6 +853,96 @@ def build_items_from_annotated_blocks(
     return output
 
 
+def rows_to_canvas_objects(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    objects: list[dict[str, object]] = []
+    for row in rows:
+        objects.append(
+            {
+                "type": "rect",
+                "left": float(row["left"]),
+                "top": float(row["top"]),
+                "width": float(row["width"]),
+                "height": float(row["height"]),
+                "fill": "rgba(0, 0, 0, 0)",
+                "stroke": "#1e88e5",
+                "strokeWidth": 2,
+            }
+        )
+    return objects
+
+
+def propose_block_rows_from_pdf(
+    parsed_items: list[SerpItem], pdf_data: bytes, image_w: int, image_h: int
+) -> list[dict[str, object]]:
+    base_blocks = contiguous_blocks_from_items(parsed_items)
+    if not base_blocks:
+        base_blocks = [{"serp_block_type": "organic", "item_count": 1}]
+
+    # Match item titles to approximate PDF line coordinates.
+    pdf_lines = extract_pdf_lines(pdf_data)
+    norm_lines = [(normalize_match_text(text), y, x) for text, y, x in pdf_lines]
+    matched: dict[int, tuple[float, float]] = {}
+    for idx, item in enumerate(parsed_items):
+        ntitle = normalize_match_text(item.title)
+        if len(ntitle) < 6:
+            continue
+        best: tuple[int, float, float] | None = None
+        for nline, y, x in norm_lines:
+            if not nline:
+                continue
+            if ntitle in nline:
+                score = len(ntitle)
+            elif len(nline) >= 8 and nline in ntitle:
+                score = len(nline)
+            else:
+                continue
+            if best is None or score > best[0]:
+                best = (score, y, x)
+        if best:
+            matched[idx] = (best[1], best[2])
+
+    rows: list[dict[str, object]] = []
+    cursor = 0
+    fallback_top = 24.0
+    for block in base_blocks:
+        block_type = str(block["serp_block_type"])
+        count = max(1, int(block["item_count"]))
+        indices = list(range(cursor, min(cursor + count, len(parsed_items))))
+        cursor += count
+
+        coords = [matched[i] for i in indices if i in matched]
+        if coords:
+            ys = [c[0] for c in coords]
+            xs = [c[1] for c in coords]
+            top = max(8.0, min(ys) - 20.0)
+            left = max(8.0, min(xs) - 28.0)
+            bottom = min(float(image_h - 8), max(ys) + 70.0)
+            height = max(56.0, bottom - top)
+            width = max(160.0, float(image_w - left - 8.0))
+            fallback_top = max(fallback_top, top + height + 12.0)
+        else:
+            top = fallback_top
+            left = 24.0
+            width = max(120.0, float(image_w - 48.0))
+            height = min(180.0, max(70.0, 82.0 + (count - 1) * 12.0))
+            fallback_top = min(float(image_h - 16.0), top + height + 12.0)
+
+        if top + height > image_h - 8:
+            height = max(40.0, float(image_h - 8) - top)
+        rows.append(
+            {
+                "serp_block_type": block_type,
+                "item_count": count,
+                "left": round(left, 1),
+                "top": round(top, 1),
+                "width": round(width, 1),
+                "height": round(height, 1),
+            }
+        )
+
+    return rows
+
+
 def render_auto_mode() -> None:
     st.subheader("Auto Mode")
     st.caption("Automatic extraction from source files. Optional PDF-based re-ranking can be enabled.")
@@ -970,7 +1060,8 @@ def render_visual_assisted_mode() -> None:
     try:
         html = load_html_from_upload(html_upload.name, html_upload.getvalue())
         query, parsed_items = parse_serp(html)
-        image, _kind = load_visual_image(visual_upload)
+        visual_bytes = visual_upload.getvalue()
+        image, visual_kind = load_visual_image(visual_upload)
     except Exception as exc:
         st.error(f"Failed to prepare visual mode: {exc}")
         return
@@ -978,63 +1069,86 @@ def render_visual_assisted_mode() -> None:
     image_w, image_h = image.size
     base_blocks = contiguous_blocks_from_items(parsed_items)
     if not base_blocks:
-        st.warning("No extracted items from HTML. You can still draw blocks manually and fill counts.")
         base_blocks = [{"serp_block_type": "organic", "item_count": 1}]
 
-    default_objects = initial_canvas_objects(base_blocks, image_w, image_h)
-    initial_drawing = {"version": "4.4.0", "objects": default_objects}
+    if visual_kind == "pdf":
+        proposed_rows = propose_block_rows_from_pdf(parsed_items, visual_bytes, image_w, image_h)
+    else:
+        proposed_rows = []
+        default_objects = initial_canvas_objects(base_blocks, image_w, image_h)
+        for idx, obj in enumerate(default_objects, start=1):
+            proposed_rows.append(
+                {
+                    "serp_block_type": base_blocks[idx - 1]["serp_block_type"] if idx - 1 < len(base_blocks) else "organic",
+                    "item_count": int(base_blocks[idx - 1]["item_count"]) if idx - 1 < len(base_blocks) else 1,
+                    "left": round(float(obj["left"]), 1),
+                    "top": round(float(obj["top"]), 1),
+                    "width": round(float(obj["width"]), 1),
+                    "height": round(float(obj["height"]), 1),
+                }
+            )
 
-    st.write("1) Draw/edit rectangles on the screenshot. 2) Edit labels/counts in the table. 3) Generate CSV.")
-    objects = []
-    canvas_ok = True
-    try:
-        canvas = st_canvas(
-            fill_color="rgba(30, 136, 229, 0.05)",
-            stroke_width=2,
-            stroke_color="#1e88e5",
-            background_image=image,
-            update_streamlit=True,
-            height=image_h,
-            width=image_w,
-            drawing_mode="rect",
-            initial_drawing=initial_drawing,
-            key="va_canvas",
-        )
-        if canvas.json_data and canvas.json_data.get("objects"):
-            for obj in canvas.json_data["objects"]:
-                if obj.get("type") != "rect":
-                    continue
-                objects.append(obj)
-    except Exception as exc:
-        canvas_ok = False
-        st.warning(
-            "Interactive canvas is unavailable in this deployment. "
-            "Using table-based annotation fallback."
-        )
-        st.caption(f"Canvas error: {exc}")
-        st.image(image, caption="Reference screenshot", use_container_width=True)
+    st.image(image, caption="Reference screenshot", use_container_width=True)
+    use_canvas = st.checkbox(
+        "Enable experimental draw-on-image canvas",
+        value=False,
+        help="If disabled, edit coordinates directly in the table (more stable on Streamlit Cloud).",
+        key="va_use_canvas",
+    )
 
-    if not objects:
-        if canvas_ok:
-            st.warning("Draw at least one rectangle block on the visual.")
-            return
-        objects = default_objects
+    st.write("1) Adjust block rectangles. 2) Edit labels/counts. 3) Generate CSV.")
+    block_rows: list[dict[str, object]] = []
+    if use_canvas:
+        objects = []
+        initial_drawing = {"version": "4.4.0", "objects": rows_to_canvas_objects(proposed_rows)}
+        try:
+            canvas = st_canvas(
+                fill_color="rgba(30, 136, 229, 0.05)",
+                stroke_width=2,
+                stroke_color="#1e88e5",
+                background_image=image,
+                update_streamlit=True,
+                height=image_h,
+                width=image_w,
+                drawing_mode="rect",
+                initial_drawing=initial_drawing,
+                key="va_canvas",
+            )
+            if canvas.json_data and canvas.json_data.get("objects"):
+                for obj in canvas.json_data["objects"]:
+                    if obj.get("type") != "rect":
+                        continue
+                    objects.append(obj)
+        except Exception as exc:
+            st.warning("Interactive canvas unavailable; using table-only editing.")
+            st.caption(f"Canvas error: {exc}")
+            objects = []
 
-    block_rows = []
-    for idx, obj in enumerate(objects, start=1):
-        fallback_type = base_blocks[idx - 1]["serp_block_type"] if idx - 1 < len(base_blocks) else "organic"
-        fallback_count = int(base_blocks[idx - 1]["item_count"]) if idx - 1 < len(base_blocks) else 1
-        block_rows.append(
-            {
-                "block_id": idx,
-                "serp_block_type": fallback_type,
-                "item_count": fallback_count,
-                "left": round(float(obj.get("left", 0.0)), 1),
-                "top": round(float(obj.get("top", 0.0)), 1),
-                "width": round(float(obj.get("width", 0.0) * float(obj.get("scaleX", 1.0))), 1),
-                "height": round(float(obj.get("height", 0.0) * float(obj.get("scaleY", 1.0))), 1),
-            }
-        )
+        if objects:
+            for idx, obj in enumerate(objects, start=1):
+                fallback_type = proposed_rows[idx - 1]["serp_block_type"] if idx - 1 < len(proposed_rows) else "organic"
+                fallback_count = int(proposed_rows[idx - 1]["item_count"]) if idx - 1 < len(proposed_rows) else 1
+                block_rows.append(
+                    {
+                        "block_id": idx,
+                        "serp_block_type": fallback_type,
+                        "item_count": fallback_count,
+                        "left": round(float(obj.get("left", 0.0)), 1),
+                        "top": round(float(obj.get("top", 0.0)), 1),
+                        "width": round(float(obj.get("width", 0.0) * float(obj.get("scaleX", 1.0))), 1),
+                        "height": round(float(obj.get("height", 0.0) * float(obj.get("scaleY", 1.0))), 1),
+                    }
+                )
+        else:
+            for idx, row in enumerate(proposed_rows, start=1):
+                block_rows.append({"block_id": idx, **row})
+    else:
+        for idx, row in enumerate(proposed_rows, start=1):
+            block_rows.append({"block_id": idx, **row})
+
+    if not block_rows:
+        st.error("Unable to build initial block proposals.")
+        return
 
     block_df = pd.DataFrame(block_rows)
     edited_df = st.data_editor(
