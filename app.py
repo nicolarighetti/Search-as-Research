@@ -579,16 +579,19 @@ def find_visual_match(html_name: str, visual_uploads: list[object]) -> object | 
     return None
 
 
-def apply_visual_ranking_from_pdf(items: list[SerpItem], pdf_data: bytes) -> tuple[list[SerpItem], int]:
+def apply_visual_ranking_from_pdf(
+    items: list[SerpItem], pdf_data: bytes, visible_only: bool = True
+) -> tuple[list[SerpItem], int, int]:
     """
     Reorder extracted items using approximate positions recovered from a PDF snapshot.
     """
     if not items:
-        return items, 0
+        return items, 0, 0
 
     pdf_lines = extract_pdf_lines(pdf_data)
     norm_lines = [(normalize_match_text(text), y, x) for text, y, x in pdf_lines]
     positions: dict[int, tuple[float, float]] = {}
+    matched_indexes: set[int] = set()
 
     for idx, item in enumerate(items):
         ntitle = normalize_match_text(item.title)
@@ -609,9 +612,22 @@ def apply_visual_ranking_from_pdf(items: list[SerpItem], pdf_data: bytes) -> tup
                 best = (score, y, x)
         if best:
             positions[idx] = (best[1], best[2])
+            matched_indexes.add(idx)
+
+    working_indices = list(range(len(items)))
+    if visible_only:
+        filtered_indices: list[int] = []
+        for idx, _item in enumerate(items):
+            # Keep rows that were matched on visual text.
+            if idx in matched_indexes:
+                filtered_indices.append(idx)
+        # Safety fallback: if matching failed, do not drop everything.
+        if filtered_indices:
+            working_indices = filtered_indices
 
     decorated = []
-    for idx, item in enumerate(items):
+    for idx in working_indices:
+        item = items[idx]
         if idx in positions:
             y, x = positions[idx]
             decorated.append((0, y, x, idx, item))
@@ -620,7 +636,7 @@ def apply_visual_ranking_from_pdf(items: list[SerpItem], pdf_data: bytes) -> tup
     decorated.sort(key=lambda row: (row[0], row[1], row[2], row[3]))
     ranked_items = [row[4] for row in decorated]
     ranked_items = normalize_section_ranks(ranked_items)
-    return ranked_items, len(positions)
+    return ranked_items, len(matched_indexes), len(working_indices)
 
 
 def main() -> None:
@@ -644,6 +660,11 @@ def main() -> None:
         value=True,
         help="Uses PDF text coordinates to improve top-bottom / left-right ordering.",
     )
+    visible_only_mode = st.checkbox(
+        "Keep only items visible in PDF text layer",
+        value=True,
+        help="Removes rows found only in serialized HTML payload but not visible in the provided PDF snapshot.",
+    )
 
     if not html_uploads:
         st.info("Upload at least one SERP source file to start.")
@@ -666,14 +687,20 @@ def main() -> None:
             if use_visual_ranking:
                 matched_visual = find_visual_match(upload.name, visual_uploads or [])
                 if matched_visual and matched_visual.name.lower().endswith(".pdf"):
-                    items, matched_count = apply_visual_ranking_from_pdf(items, matched_visual.getvalue())
+                    items, matched_count, kept_count = apply_visual_ranking_from_pdf(
+                        items,
+                        matched_visual.getvalue(),
+                        visible_only=visible_only_mode,
+                    )
                     visual_used = matched_visual.name
                     if matched_count == 0:
                         for item in items:
                             item.notes = clean_text(f"{item.notes}; visual pdf matched but no title positions found")
                     else:
                         for item in items:
-                            item.notes = clean_text(f"{item.notes}; visual ranking from {visual_used}; matched_titles={matched_count}")
+                            item.notes = clean_text(
+                                f"{item.notes}; visual ranking from {visual_used}; matched_titles={matched_count}; kept_items={kept_count}"
+                            )
 
             browser = guess_browser(upload.name)
             frame = rows_to_dataframe(query=query, browser=browser, source_file=upload.name, items=items)
