@@ -57,6 +57,12 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+## Dependency Note
+The interactive visual canvas requires a compatible Streamlit/components pair.
+This repository pins:
+- `streamlit==1.31.1`
+- `streamlit-drawable-canvas==0.9.3`
+
 ## Notes
 - Expanded content is not reconstructed from non-expanded snapshots.
 - PDF visual ranking and visual-assisted annotation are heuristic but significantly improve block structure control.
