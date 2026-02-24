@@ -2,6 +2,17 @@
 
 Tool Streamlit per estrarre una tabella CSV strutturata da snapshot SERP Google.
 
+## Uso web (senza installare nulla)
+Puoi pubblicare l'app da GitHub su Streamlit Community Cloud (gratis):
+
+1. Pusha il repository su GitHub (pubblico consigliato).
+2. Vai su [share.streamlit.io](https://share.streamlit.io) e fai login.
+3. `New app` -> seleziona questo repo.
+4. Imposta `Main file path` = `app.py`.
+5. Deploy.
+
+Dopo il deploy gli utenti usano solo il link web, senza Python o dipendenze locali.
+
 ## Funzioni v1
 - Upload file: `.html`, `.htm`, `.mht`, `.mhtml`, `.webarchive`
 - Estrazione campi principali:
@@ -11,16 +22,11 @@ Tool Streamlit per estrarre una tabella CSV strutturata da snapshot SERP Google.
   - `is_expandable` (`TRUE`/`FALSE`)
 - Anteprima tabellare e download CSV
 
-## Avvio locale
-1. Crea e attiva un virtual environment Python 3.10+
-2. Installa dipendenze:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Avvia app:
-   ```bash
-   streamlit run app.py
-   ```
+## Avvio locale (opzionale)
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
 
 ## Note
 - La dimensione `espanso` non viene ricostruita da snapshot non espansi.
