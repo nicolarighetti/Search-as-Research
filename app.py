@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import email
 import email.policy
-import base64
 import io
 import plistlib
 import re
@@ -16,57 +15,6 @@ import pandas as pd
 import streamlit as st
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw
-from streamlit_drawable_canvas import st_canvas
-
-
-def patch_streamlit_canvas_compat() -> None:
-    """
-    Compatibility shim for streamlit-drawable-canvas on newer Streamlit versions
-    where image_to_url moved from streamlit.elements.image.
-    """
-    try:
-        from streamlit.elements import image as st_image
-    except Exception:
-        return
-
-    if hasattr(st_image, "image_to_url"):
-        return
-
-    def _image_to_data_url(*args, **kwargs) -> str:
-        """
-        Backward-compatible shim for components expecting st_image.image_to_url.
-        Works across Streamlit versions by emitting a PNG data URL.
-        """
-        image_obj = kwargs.get("image")
-        if image_obj is None:
-            for candidate in args:
-                if hasattr(candidate, "save") and hasattr(candidate, "size"):
-                    image_obj = candidate
-                    break
-                if isinstance(candidate, (bytes, bytearray)):
-                    image_obj = Image.open(io.BytesIO(candidate)).convert("RGB")
-                    break
-                if hasattr(candidate, "shape"):
-                    try:
-                        image_obj = Image.fromarray(candidate).convert("RGB")
-                        break
-                    except Exception:
-                        continue
-
-        if image_obj is None:
-            return ""
-
-        try:
-            if not (hasattr(image_obj, "save") and hasattr(image_obj, "size")):
-                image_obj = Image.fromarray(image_obj).convert("RGB")
-            buffer = io.BytesIO()
-            image_obj.save(buffer, format="PNG")
-            encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-            return f"data:image/png;base64,{encoded}"
-        except Exception:
-            return ""
-
-    setattr(st_image, "image_to_url", _image_to_data_url)
 
 
 OUTPUT_COLUMNS = [
@@ -933,24 +881,6 @@ def build_items_from_annotated_blocks(
     return output
 
 
-def rows_to_canvas_objects(rows: list[dict[str, object]]) -> list[dict[str, object]]:
-    objects: list[dict[str, object]] = []
-    for row in rows:
-        objects.append(
-            {
-                "type": "rect",
-                "left": float(row["left"]),
-                "top": float(row["top"]),
-                "width": float(row["width"]),
-                "height": float(row["height"]),
-                "fill": "rgba(0, 0, 0, 0)",
-                "stroke": "#1e88e5",
-                "strokeWidth": 2,
-            }
-        )
-    return objects
-
-
 def propose_block_rows_from_pdf(
     parsed_items: list[SerpItem], pdf_data: bytes, image_w: int, image_h: int
 ) -> list[dict[str, object]]:
@@ -1118,7 +1048,6 @@ def render_auto_mode() -> None:
 def render_visual_assisted_mode() -> None:
     st.subheader("Visual Assisted Mode")
     st.caption("Upload HTML + screenshot/PDF. The app proposes blocks and you can manually adjust them.")
-    patch_streamlit_canvas_compat()
 
     html_upload = st.file_uploader(
         "Upload one SERP source file (required)",
@@ -1169,62 +1098,13 @@ def render_visual_assisted_mode() -> None:
             )
 
     show_image_compat(image, caption="Reference screenshot")
-    use_canvas = st.checkbox(
-        "Enable experimental draw-on-image canvas",
-        value=False,
-        help="If disabled, edit coordinates directly in the table (more stable on Streamlit Cloud).",
-        key="va_use_canvas",
+    st.info(
+        "Stable mode: edit block coordinates in the table below. "
+        "The overlay preview is rendered directly over the screenshot."
     )
 
-    st.write("1) Adjust block rectangles. 2) Edit labels/counts. 3) Generate CSV.")
-    block_rows: list[dict[str, object]] = []
-    if use_canvas:
-        objects = []
-        initial_drawing = {"version": "4.4.0", "objects": rows_to_canvas_objects(proposed_rows)}
-        try:
-            canvas = st_canvas(
-                fill_color="rgba(30, 136, 229, 0.05)",
-                stroke_width=2,
-                stroke_color="#1e88e5",
-                background_image=image,
-                update_streamlit=True,
-                height=image_h,
-                width=image_w,
-                drawing_mode="rect",
-                initial_drawing=initial_drawing,
-                key="va_canvas",
-            )
-            if canvas.json_data and canvas.json_data.get("objects"):
-                for obj in canvas.json_data["objects"]:
-                    if obj.get("type") != "rect":
-                        continue
-                    objects.append(obj)
-        except Exception as exc:
-            st.warning("Interactive canvas unavailable; using table-only editing.")
-            st.caption(f"Canvas error: {exc}")
-            objects = []
-
-        if objects:
-            for idx, obj in enumerate(objects, start=1):
-                fallback_type = proposed_rows[idx - 1]["serp_block_type"] if idx - 1 < len(proposed_rows) else "organic"
-                fallback_count = int(proposed_rows[idx - 1]["item_count"]) if idx - 1 < len(proposed_rows) else 1
-                block_rows.append(
-                    {
-                        "block_id": idx,
-                        "serp_block_type": fallback_type,
-                        "item_count": fallback_count,
-                        "left": round(float(obj.get("left", 0.0)), 1),
-                        "top": round(float(obj.get("top", 0.0)), 1),
-                        "width": round(float(obj.get("width", 0.0) * float(obj.get("scaleX", 1.0))), 1),
-                        "height": round(float(obj.get("height", 0.0) * float(obj.get("scaleY", 1.0))), 1),
-                    }
-                )
-        else:
-            for idx, row in enumerate(proposed_rows, start=1):
-                block_rows.append({"block_id": idx, **row})
-    else:
-        for idx, row in enumerate(proposed_rows, start=1):
-            block_rows.append({"block_id": idx, **row})
+    st.write("1) Adjust block rectangles in the table. 2) Review overlay. 3) Generate CSV.")
+    block_rows = [{"block_id": idx, **row} for idx, row in enumerate(proposed_rows, start=1)]
 
     if not block_rows:
         st.error("Unable to build initial block proposals.")

@@ -59,10 +59,9 @@ streamlit run app.py
 ```
 
 ## Dependency Note
-The interactive visual canvas requires a compatible Streamlit/components pair.
+The app uses a stable table-driven visual annotation flow (no external canvas component).
 This repository pins:
 - `streamlit==1.31.1`
-- `streamlit-drawable-canvas==0.9.3`
 
 ## Notes
 - Expanded content is not reconstructed from non-expanded snapshots.
