@@ -18,6 +18,34 @@ from PIL import Image
 from streamlit_drawable_canvas import st_canvas
 
 
+def patch_streamlit_canvas_compat() -> None:
+    """
+    Compatibility shim for streamlit-drawable-canvas on newer Streamlit versions
+    where image_to_url moved from streamlit.elements.image.
+    """
+    try:
+        from streamlit.elements import image as st_image
+    except Exception:
+        return
+
+    if hasattr(st_image, "image_to_url"):
+        return
+
+    candidates = [
+        ("streamlit.elements.lib.image_utils", "image_to_url"),
+        ("streamlit.elements.image_utils", "image_to_url"),
+    ]
+    for module_name, attr_name in candidates:
+        try:
+            module = __import__(module_name, fromlist=[attr_name])
+            image_to_url = getattr(module, attr_name, None)
+            if image_to_url:
+                setattr(st_image, "image_to_url", image_to_url)
+                return
+        except Exception:
+            continue
+
+
 OUTPUT_COLUMNS = [
     "query",
     "browser",
@@ -897,6 +925,7 @@ def render_auto_mode() -> None:
 def render_visual_assisted_mode() -> None:
     st.subheader("Visual Assisted Mode")
     st.caption("Upload HTML + screenshot/PDF. The app proposes blocks and you can manually adjust them.")
+    patch_streamlit_canvas_compat()
 
     html_upload = st.file_uploader(
         "Upload one SERP source file (required)",
