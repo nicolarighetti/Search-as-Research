@@ -735,7 +735,7 @@ def initial_canvas_objects(blocks: list[dict[str, object]], width: int, height: 
                 "top": float(top),
                 "width": float(usable_w),
                 "height": float(h),
-                "fill": "rgba(30, 136, 229, 0.15)",
+                "fill": "rgba(0, 0, 0, 0)",
                 "stroke": "#1e88e5",
                 "strokeWidth": 2,
             }
@@ -989,7 +989,7 @@ def render_visual_assisted_mode() -> None:
     canvas_ok = True
     try:
         canvas = st_canvas(
-            fill_color="rgba(30, 136, 229, 0.15)",
+            fill_color="rgba(30, 136, 229, 0.05)",
             stroke_width=2,
             stroke_color="#1e88e5",
             background_image=image,
