@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import email
 import email.policy
+import base64
 import io
 import plistlib
 import re
@@ -31,19 +32,41 @@ def patch_streamlit_canvas_compat() -> None:
     if hasattr(st_image, "image_to_url"):
         return
 
-    candidates = [
-        ("streamlit.elements.lib.image_utils", "image_to_url"),
-        ("streamlit.elements.image_utils", "image_to_url"),
-    ]
-    for module_name, attr_name in candidates:
+    def _image_to_data_url(*args, **kwargs) -> str:
+        """
+        Backward-compatible shim for components expecting st_image.image_to_url.
+        Works across Streamlit versions by emitting a PNG data URL.
+        """
+        image_obj = kwargs.get("image")
+        if image_obj is None:
+            for candidate in args:
+                if hasattr(candidate, "save") and hasattr(candidate, "size"):
+                    image_obj = candidate
+                    break
+                if isinstance(candidate, (bytes, bytearray)):
+                    image_obj = Image.open(io.BytesIO(candidate)).convert("RGB")
+                    break
+                if hasattr(candidate, "shape"):
+                    try:
+                        image_obj = Image.fromarray(candidate).convert("RGB")
+                        break
+                    except Exception:
+                        continue
+
+        if image_obj is None:
+            return ""
+
         try:
-            module = __import__(module_name, fromlist=[attr_name])
-            image_to_url = getattr(module, attr_name, None)
-            if image_to_url:
-                setattr(st_image, "image_to_url", image_to_url)
-                return
+            if not (hasattr(image_obj, "save") and hasattr(image_obj, "size")):
+                image_obj = Image.fromarray(image_obj).convert("RGB")
+            buffer = io.BytesIO()
+            image_obj.save(buffer, format="PNG")
+            encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+            return f"data:image/png;base64,{encoded}"
         except Exception:
-            continue
+            return ""
+
+    setattr(st_image, "image_to_url", _image_to_data_url)
 
 
 OUTPUT_COLUMNS = [
