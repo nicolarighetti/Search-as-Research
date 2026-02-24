@@ -764,6 +764,17 @@ def load_visual_image(upload: object) -> tuple[Image.Image, str]:
     return pil_image, "image"
 
 
+def show_image_compat(image: Image.Image, caption: str) -> None:
+    """Render image across Streamlit versions with different keyword arguments."""
+    try:
+        st.image(image, caption=caption, use_container_width=True)
+    except TypeError:
+        try:
+            st.image(image, caption=caption, use_column_width=True)
+        except TypeError:
+            st.image(image, caption=caption)
+
+
 def assign_block_ranks_from_geometry(blocks: list[dict[str, object]], image_height: int) -> list[dict[str, object]]:
     if not blocks:
         return blocks
@@ -1088,7 +1099,7 @@ def render_visual_assisted_mode() -> None:
                 }
             )
 
-    st.image(image, caption="Reference screenshot", use_container_width=True)
+    show_image_compat(image, caption="Reference screenshot")
     use_canvas = st.checkbox(
         "Enable experimental draw-on-image canvas",
         value=False,
