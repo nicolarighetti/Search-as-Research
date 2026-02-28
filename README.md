@@ -1,6 +1,6 @@
 # Search as Research
 
-Streamlit app that extracts a structured CSV table from saved Google SERP snapshots.
+Streamlit app that extracts a structured CSV table from saved Google SERP source files.
 
 ## Web Deployment (No User-Side Install)
 You can publish this app from GitHub to Streamlit Community Cloud (free):
@@ -13,24 +13,24 @@ You can publish this app from GitHub to Streamlit Community Cloud (free):
 
 Once deployed, end users only need the app URL. They do not need Python or local dependencies.
 
-## App Modes
+## Scope
+- Input files: `.html`, `.htm`, `.mht`, `.mhtml`, `.webarchive`
+- Output: editable tabular data + CSV export
+- Visual-assisted mode and PDF/screenshot processing are intentionally removed for stability.
 
-### 1) Auto Mode
-Automatic extraction from source files:
-- Input source files (required): `.html`, `.htm`, `.mht`, `.mhtml`, `.webarchive`
-- Optional visual files: `.pdf`, `.png`, `.jpg`, `.jpeg`
-- Optional PDF-based ranking refinement and visible-only filtering
+## Manual Validation Requirement
+Hierarchy fields are generated heuristically and must be manually checked and edited:
+- `serp_block_rank_tb`
+- `serp_block_rank_lr`
+- `item_rank_tb`
+- `item_rank_lr`
+- optionally `serp_block_type`
 
-### 2) Visual Assisted Mode
-Human-in-the-loop annotation workflow:
-- Upload one source file (`html/mht/webarchive`) and one screenshot (`pdf/png/jpg`)
-- The app proposes block rectangles (coordinates)
-- You can manually edit coordinates and labels in a table (`left`, `top`, `width`, `height`, `serp_block_type`, `item_count`)
-- The app renders an overlay preview with rectangles drawn over the screenshot
-- The app computes `serp_block_rank_tb` / `serp_block_rank_lr` from geometry
-- Items are enriched from HTML and exported to CSV
+The app exposes an editable table before CSV download exactly for this manual validation step.
 
-This mode is recommended when automatic structure is not satisfactory.
+## AI Summary Extraction
+The parser attempts to capture AI-generated summary content under `serp_block_type = ai_summary`.
+This extraction is heuristic and may require manual correction.
 
 ## CSV Data Dictionary
 
@@ -39,30 +39,21 @@ This mode is recommended when automatic structure is not satisfactory.
 | `query` | string | Search query inferred from page metadata/title. | `IA` |
 | `browser` | string | Browser inferred from file name when possible. | `chrome` |
 | `source_file` | string | Uploaded source file used for extraction. | `chrome html.html` |
-| `serp_block_type` | string | SERP block family. Current values: `organic`, `people_also_ask`, `video_pack`, `image_pack`, `other`. | `organic` |
-| `serp_block_rank_tb` | integer | Block order from top to bottom; in visual mode based on block Y coordinates. | `1` |
-| `serp_block_rank_lr` | integer | Block order from left to right within the same vertical row. | `1` |
-| `item_type` | string | Item category inside a block. Current values: `result`, `question`, `video`, `image`. | `result` |
-| `item_rank_tb` | integer | Item order from top to bottom inside the block. | `2` |
-| `item_rank_lr` | integer | Item order from left to right inside the block (notably used in image rows). | `1` |
-| `is_expandable` | boolean-like string | Whether the item is expandable in SERP interaction terms (`TRUE` / `FALSE`). | `TRUE` |
-| `title` | string | Main item title text. | `ChatGPT` |
-| `description` | string | Item snippet/description text, when available. | `...` |
-| `url` | string | Destination URL extracted from the item, when available. | `https://openai.com/it-IT/` |
+| `serp_block_type` | string | SERP block family. Current values include `organic`, `ai_summary`, `people_also_ask`, `video_pack`, `image_pack`, `other`. | `ai_summary` |
+| `serp_block_rank_tb` | integer | Block order from top to bottom (heuristic; manual check required). | `1` |
+| `serp_block_rank_lr` | integer | Block order from left to right (heuristic; manual check required). | `1` |
+| `item_type` | string | Item category inside a block. | `summary` |
+| `item_rank_tb` | integer | Item order from top to bottom inside the block (heuristic; manual check required). | `1` |
+| `item_rank_lr` | integer | Item order from left to right inside the block (heuristic; manual check required). | `1` |
+| `is_expandable` | boolean-like string | Whether the item is expandable in SERP interaction terms (`TRUE` / `FALSE`). | `FALSE` |
+| `title` | string | Main item title text. | `AI Summary` |
+| `description` | string | Item snippet/summary text, when available. | `...` |
+| `url` | string | Destination URL extracted from the item, when available. | `https://openai.com/` |
 | `domain` | string | Host/domain parsed from `url`. | `openai.com` |
-| `notes` | string | Additional extraction notes (fallback path, visual metadata, manual-assisted output notes). | `visual_assisted` |
+| `notes` | string | Additional extraction notes and heuristics metadata. | `heuristic_ai_summary; verify manually` |
 
 ## Local Run (Optional)
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
-
-## Dependency Note
-The app uses a stable table-driven visual annotation flow (no external canvas component).
-This repository pins:
-- `streamlit==1.31.1`
-
-## Notes
-- Expanded content is not reconstructed from non-expanded snapshots.
-- PDF visual ranking and visual-assisted annotation are heuristic but significantly improve block structure control.
