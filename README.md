@@ -26,7 +26,15 @@ Hierarchy fields are generated heuristically and must be manually checked and ed
 - `item_rank_lr`
 - optionally `serp_block_type`
 
-The app exposes an editable table before CSV download exactly for this manual validation step.
+This is a **mandatory** step before using the CSV in analysis.
+The numeric hierarchy must be reviewed and corrected manually for each `source_file` and each block/item.
+In particular, make sure the numeric ordering reflects the intended source hierarchy in the page:
+- top-to-bottom block order (`serp_block_rank_tb`)
+- left-to-right block order (`serp_block_rank_lr`)
+- top-to-bottom item order inside each block (`item_rank_tb`)
+- left-to-right item order inside each block (`item_rank_lr`)
+
+The app exposes an editable table before CSV download for this exact manual validation step.
 
 ## AI Summary Extraction
 The parser attempts to capture AI-generated summary content under `serp_block_type = ai_summary`.
