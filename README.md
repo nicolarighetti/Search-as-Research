@@ -10,7 +10,6 @@ The app is currently online at:
 ## Scope
 - Input files: `.html`, `.htm`, `.mht`, `.mhtml`, `.webarchive`
 - Output: editable tabular data + CSV export
-- Visual-assisted mode and PDF/screenshot processing are intentionally removed for stability.
 
 ## Manual Validation Requirement
 Hierarchy fields are generated heuristically and must be manually checked and edited:
@@ -68,5 +67,3 @@ You can publish this app from GitHub to Streamlit Community Cloud (free):
 3. Click `New app` and select this repository.
 4. Set `Main file path` to `app.py`.
 5. Deploy.
-
-Once deployed, end users only need the app URL. They do not need Python or local dependencies.
