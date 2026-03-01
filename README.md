@@ -2,16 +2,10 @@
 
 Streamlit app that extracts a structured CSV table from saved Google SERP source files.
 
-## Web Deployment (No User-Side Install)
-You can publish this app from GitHub to Streamlit Community Cloud (free):
+## Online App
+The app is currently online at:
 
-1. Push this repository to GitHub (public is recommended).
-2. Go to [share.streamlit.io](https://share.streamlit.io) and sign in.
-3. Click `New app` and select this repository.
-4. Set `Main file path` to `app.py`.
-5. Deploy.
-
-Once deployed, end users only need the app URL. They do not need Python or local dependencies.
+- [https://search-as-research.streamlit.app](https://search-as-research.streamlit.app)
 
 ## Scope
 - Input files: `.html`, `.htm`, `.mht`, `.mhtml`, `.webarchive`
@@ -65,3 +59,14 @@ This extraction is heuristic and may require manual correction.
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+## Web Deployment (No User-Side Install)
+You can publish this app from GitHub to Streamlit Community Cloud (free):
+
+1. Push this repository to GitHub (public is recommended).
+2. Go to [share.streamlit.io](https://share.streamlit.io) and sign in.
+3. Click `New app` and select this repository.
+4. Set `Main file path` to `app.py`.
+5. Deploy.
+
+Once deployed, end users only need the app URL. They do not need Python or local dependencies.
